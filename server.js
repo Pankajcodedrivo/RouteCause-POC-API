@@ -14,7 +14,8 @@ app.use(
     ],
   }),
 );
-app.use(express.json());
+app.use(express.json({ limit: '100mb' })); // allow up to 10MB
+app.use(express.urlencoded({ limit: '100mb', extended: true }));
 app.get('/', (req, res) => {
     res.send('API is running!');
 });
