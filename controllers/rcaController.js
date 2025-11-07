@@ -31,13 +31,17 @@ const sendEmailReport = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Email and data required' });
     }
 
-    const { rootCauses, recommendations, references } = JSON.parse(data);
+    // ✅ Handle both stringified and object JSON
+    const parsedData = typeof data === "string" ? JSON.parse(data) : data;
+    const { rootCauses, recommendations, references } = parsedData;
+
     const logoUrl = `${process.env.BASE_URL}/uploads/logo.png`;
-    // Load template file
+
+    // Load HTML template
     const templatePath = path.join(process.cwd(), 'templates', 'emailReport.html');
     let html = fs.readFileSync(templatePath, 'utf8');
 
-    // Build HTML fragments
+    // Generate dynamic HTML
     const rootCausesHTML = rootCauses
       .map(
         rc => `
@@ -55,8 +59,9 @@ const sendEmailReport = async (req, res) => {
       .map(ref => `<li><strong>${ref.title}</strong> ${ref.description}</li>`)
       .join('');
 
-    // Replace placeholders
+    // Replace placeholders in template
     html = html
+      .replace('{{logoUrl}}', logoUrl)
       .replace('{{rootCauses}}', rootCausesHTML)
       .replace('{{shortTerm}}', recommendations.shortTerm || '-')
       .replace('{{longTerm}}', recommendations.longTerm || '-')
