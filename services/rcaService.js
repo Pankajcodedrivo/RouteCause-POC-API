@@ -5,48 +5,55 @@ async function generateRootCause({ description, documents, images }) {
   const docList = documents.map(d => d.originalname).join(', ');
   const imgList = images.map(i => i.originalname).join(', ');
   const systemPrompt = `
-  You are an expert in manufacturing Root Cause Analysis (RCA) following DFMEA, PFMEA, and IATF 16949 standards.
-  Your task:
-  Analyze the provided defect description, inspection data, SPC data, images, and all attached reference documents (PFMEA, LPA results, process logs, etc.). 
-  Synthesize information across all sources to determine the most probable root cause(s) using logical, probabilistic reasoning.
+    You are an expert in manufacturing Root Cause Analysis (RCA) following DFMEA, PFMEA, and IATF 16949 standards.
 
-  Consider:
-  - DFMEA and PFMEA failure modes and existing controls
-  - SPC trends, process parameter variations, and timestamps
-  - LPA findings and audit trails
-  - Operator, shift, and environmental influences
-  - Historical or maintenance evidence
+    Your task:
+    Analyze the provided defect description, inspection data, SPC data, LPA audits, process logs, images, and all attached reference documents.
+    Synthesize information across all sources to determine the most probable root cause(s) using logical and probabilistic reasoning.
 
-  Output **only valid JSON** in the following format:
+    Consider:
+    - DFMEA and PFMEA failure modes and current controls
+    - SPC trends, process parameter variations, and timestamps
+    - LPA findings and audit results
+    - Operator, shift, and environmental influences
+    - Historical maintenance or calibration records
 
-  {
-    "rootCauses": [
-      {
-        "cause": "string",
-        "probability": "string",
-        "factors": "string",
-        "explanation": "string",
-        "keyInsightForRCA": "string"
-      }
-    ],
-    "recommendations": {
-      "shortTerm": "string",
-      "longTerm": "string"
-    },
-    "references": [
-      { "title": "string", "description": "string" }
-    ]
-  }
+    Output **only valid JSON** in the following format:
 
-  Guidelines:
-  - Use technical manufacturing and quality terminology (SPC, LPA, DFMEA, PFMEA, etc.).
-  - Incorporate **specific data details**: operator shift, date/time ranges, and affected process parameters where possible.
-  - Correlate findings across SPC trends, LPA audits, and process data.
-  - Clearly identify systemic vs. special cause variations.
-  - The "keyInsightForRCA" field should summarize the most critical evidence-driven conclusion linking multiple data sources.
-  - Use probabilistic reasoning and evidence-backed logic.
-  - Return JSON only (no markdown, comments, or formatting).
-  `;
+    {
+      "rootCauses": [
+        {
+          "cause": "string",
+          "probability": "string",
+          "factors": "string",
+          "explanation": "string",
+          "keyInsightForRCA": "string"
+        }
+      ],
+      "recommendations": {
+        "shortTerm": "string",
+        "longTerm": "string"
+      },
+      "references": [
+        { "title": "string", "description": "string" }
+      ]
+    }
+
+    Guidelines:
+    - Use precise manufacturing and quality terminology (SPC, LPA, DFMEA, PFMEA, etc.).
+    - Include **specific details** whenever possible:
+      - Operator name or ID and shift (Who)
+      - The exact failure or variation observed (What)
+      - Time/date ranges and duration (When)
+      - Process station, machine, or environment (Where)
+      - Mechanism or reason explaining the linkage (How)
+    - Quantify findings where available (e.g., “40% non-conformance rate,” “12 of 30 samples out of spec,” “deviation began 2024-09-14”).
+    - Correlate SPC anomalies, LPA results, and process parameter data to identify causal chains.
+    - The **"keyInsightForRCA"** field must summarize the integrated Who–What–When–Where–How explanation with supporting numeric data if available.
+    - Distinguish between systemic and special cause variation.
+    - Use evidence-backed probabilistic reasoning.
+    - Return JSON only (no markdown, no comments, no extra text).
+    `;
 
   const userPrompt = `
   Defect Description: ${description || '(none provided)'}
