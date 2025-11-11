@@ -15,7 +15,7 @@ const s3 = new S3Client({
 // ✅ Efficient presigner: works with both "key" and "location"
 async function getPresignedUrl(file) {
   try {
-    let bucket = process.env.AWS_BUCKET;
+    let bucket = process.env.AWS_S3_BUCKET;
     let key;
     
     if (file.key) {
