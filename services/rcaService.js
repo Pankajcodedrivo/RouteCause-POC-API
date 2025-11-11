@@ -13,26 +13,20 @@ const s3 = new S3Client({
   },
 });
 
-/**
- * ✅ Get a readable stream from S3
- */
+/** ✅ Get a readable stream from S3 */
 async function getFileStreamFromS3(bucket, key) {
   const command = new GetObjectCommand({ Bucket: bucket, Key: key });
   const response = await s3.send(command);
-  return response.Body; // returns readable stream
+  return response.Body;
 }
 
-/**
- * ✅ Generate presigned URL for image readability
- */
+/** ✅ Generate presigned URL for image readability */
 async function getSignedS3Url(bucket, key) {
   const command = new GetObjectCommand({ Bucket: bucket, Key: key });
   return await getSignedUrl(s3, command, { expiresIn: 300 });
 }
 
-/**
- * 🧠 Core RCA Generation Logic using Assistants API
- */
+/** 🧠 Core RCA Generation Logic using Assistants API */
 async function generateRootCause({ description, documents = [], images = [], deep = true }) {
   console.log('🟢 Starting RCA generation via Assistants API...');
 
@@ -145,11 +139,12 @@ Images Uploaded:
 ${imgList}
 `;
 
-    // --- 6️⃣ Create Assistant ---
+    // --- 6️⃣ Create Assistant (with file_search tool) ---
     const assistant = await client.beta.assistants.create({
       name: "RCA Root Cause Assistant",
       instructions: systemPrompt,
       model: "gpt-4o-mini",
+      tools: [{ type: "file_search" }], // ✅ REQUIRED for reading attachments
     });
 
     // --- 7️⃣ Create Thread ---
@@ -165,7 +160,10 @@ ${imgList}
           image_url: img.url,
         })),
       ],
-      attachments: uploadedDocs.map(f => ({ file_id: f.id })),
+      attachments: uploadedDocs.map(f => ({
+        file_id: f.id,
+        tools: [{ type: "file_search" }], // ✅ REQUIRED — fixes your 400 error
+      })),
     });
 
     // --- 9️⃣ Run Assistant ---
@@ -195,7 +193,7 @@ ${imgList}
       throw new Error('Invalid JSON response from assistant');
     }
 
-    // --- 🧹 Delete uploaded files ---
+    // --- 🧹 Cleanup ---
     for (const doc of uploadedDocs) {
       try {
         await client.files.del(doc.id);
