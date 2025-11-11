@@ -1,10 +1,23 @@
-const OpenAI = require('openai');
-const { S3Client, GetObjectCommand } = require('@aws-sdk/client-s3');
-const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
+/**
+ * Root Cause Analysis Generator
+ * ----------------------------------------------
+ * Reads documents directly from AWS S3,
+ * extracts text (PDF, DOCX, XLSX, TXT),
+ * builds a contextual RCA request,
+ * and generates structured JSON via GPT-4o.
+ */
 
+const OpenAI = require("openai");
+const { S3Client, GetObjectCommand } = require("@aws-sdk/client-s3");
+const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
+const pdfParse = require("pdf-parse");
+const mammoth = require("mammoth");
+const XLSX = require("xlsx");
+
+// --- Initialize OpenAI ---
 const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-// --- AWS S3 Setup ---
+// --- AWS S3 Client ---
 const s3 = new S3Client({
   region: process.env.AWS_REGION,
   credentials: {
@@ -13,201 +26,169 @@ const s3 = new S3Client({
   },
 });
 
-/** ✅ Get a readable stream from S3 */
-async function getFileStreamFromS3(bucket, key) {
-  const command = new GetObjectCommand({ Bucket: bucket, Key: key });
-  const response = await s3.send(command);
-  return response.Body;
+/* -------------------------------------------------------------
+   🧩 Utility Helpers
+------------------------------------------------------------- */
+
+/** Convert S3 stream to Buffer */
+async function streamToBuffer(stream) {
+  const chunks = [];
+  for await (const chunk of stream) chunks.push(chunk);
+  return Buffer.concat(chunks);
 }
 
-/** ✅ Generate presigned URL for image readability */
+/** Extract text from S3 object based on MIME type */
+async function extractTextFromS3(bucket, key, mimeType) {
+  const command = new GetObjectCommand({ Bucket: bucket, Key: key });
+  const response = await s3.send(command);
+  const buffer = await streamToBuffer(response.Body);
+
+  switch (mimeType) {
+    case "application/pdf": {
+      const data = await pdfParse(buffer);
+      return data.text;
+    }
+    case "application/vnd.openxmlformats-officedocument.wordprocessingml.document": {
+      const result = await mammoth.extractRawText({ buffer });
+      return result.value;
+    }
+    case "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": {
+      const workbook = XLSX.read(buffer, { type: "buffer" });
+      let text = "";
+      workbook.SheetNames.forEach((sheetName) => {
+        const csv = XLSX.utils.sheet_to_csv(workbook.Sheets[sheetName]);
+        text += `\n--- Sheet: ${sheetName} ---\n${csv}`;
+      });
+      return text;
+    }
+    case "text/plain": {
+      return buffer.toString("utf8");
+    }
+    default:
+      return `⚠️ Unsupported file type: ${mimeType}`;
+  }
+}
+
+/** Create presigned S3 URL for images (5-minute validity) */
 async function getSignedS3Url(bucket, key) {
   const command = new GetObjectCommand({ Bucket: bucket, Key: key });
   return await getSignedUrl(s3, command, { expiresIn: 300 });
 }
 
-/** 🧠 Core RCA Generation Logic using Assistants API */
+/* -------------------------------------------------------------
+   🧠 Root Cause Generator
+------------------------------------------------------------- */
+
 async function generateRootCause({ description, documents = [], images = [], deep = true }) {
-  console.log('🟢 Starting RCA generation via Assistants API...');
+  console.log("🟢 Starting deep RCA generation...");
 
-  const uploadedDocs = [];
-  try {
-    // --- 1️⃣ Upload S3 documents to OpenAI ---
-    for (const doc of documents) {
-      const bucket = process.env.AWS_S3_BUCKET;
-      const key = doc.key;
-      const filename = doc.originalname || 'document';
+  const bucket = process.env.AWS_S3_BUCKET;
+  let combinedText = "";
 
-      if (!bucket || !key) {
-        console.warn(`⚠️ Skipping invalid document: ${filename}`);
-        continue;
-      }
+  /* ------------------------------
+     1️⃣ Extract text from S3 files
+  ------------------------------ */
+  for (const doc of documents) {
+    if (!doc.key || !doc.mimetype) continue;
 
-      console.log(`📄 Uploading ${filename} from S3 to OpenAI...`);
-      const fileStream = await getFileStreamFromS3(bucket, key);
-
-      const uploadedFile = await client.files.create({
-        file: fileStream,
-        purpose: 'assistants',
-      });
-
-      uploadedDocs.push({ id: uploadedFile.id, name: filename });
+    console.log(`📄 Extracting: ${doc.originalname}`);
+    try {
+      const text = await extractTextFromS3(bucket, doc.key, doc.mimetype);
+      combinedText += `\n\n===== ${doc.originalname} =====\n${text}`;
+    } catch (err) {
+      combinedText += `\n\n⚠️ Failed to read ${doc.originalname}: ${err.message}`;
     }
+  }
 
-    // --- 2️⃣ Generate signed URLs for images ---
-    const signedImages = await Promise.all(
-      images.map(async (img) => {
-        const bucket = process.env.AWS_S3_BUCKET;
-        const key = img.key;
-        const url = await getSignedS3Url(bucket, key);
-        return { name: img.originalname, url };
-      })
-    );
+  /* ------------------------------
+     2️⃣ Generate signed image URLs
+  ------------------------------ */
+  const signedImages = [];
+  for (const img of images) {
+    if (!img.key) continue;
+    try {
+      const url = await getSignedS3Url(bucket, img.key);
+      signedImages.push({ name: img.originalname, url });
+    } catch (err) {
+      console.warn(`⚠️ Failed to sign image ${img.originalname}: ${err.message}`);
+    }
+  }
 
-    // --- 3️⃣ Build context lists ---
-    const docList = uploadedDocs.map(d => d.name).join('\n') || 'none';
-    const imgList = signedImages.map(i => i.name).join('\n') || 'none';
+  /* ------------------------------
+     3️⃣ Build analysis prompts
+  ------------------------------ */
+  const systemPrompt = `
+You are an expert in manufacturing Root Cause Analysis (RCA),
+following DFMEA, PFMEA, and IATF 16949 standards.
 
-    // --- 4️⃣ Define system (assistant) prompt ---
-    const systemPrompt = `
-You are an expert in manufacturing Root Cause Analysis (RCA) following DFMEA, PFMEA, and IATF 16949 standards.
+Your mission:
+Analyze the provided defect description and extracted file data
+(PDF, Word, Excel, or text), along with optional images.
+Identify the **top 3 most probable root causes**, ranked by likelihood.
 
-Your task:
-Analyze the defect description, inspection data, SPC data, LPA audits, and uploaded reference files (documents + images).
-Use these inputs to determine the **top 3 most probable root causes**, ranked by probability.
-
-Return only **valid JSON** in this structure:
+Return strictly **valid JSON** in this structure:
 {
   "rootCauses": [
-    {
-      "rank": "1",
-      "cause": "string",
-      "probability": "High",
-      "factors": "string",
-      "explanation": "string",
-      "keyInsightForRCA": "string"
-    },
-    {
-      "rank": "2",
-      "cause": "string",
-      "probability": "Medium",
-      "factors": "string",
-      "explanation": "string",
-      "keyInsightForRCA": "string"
-    },
-    {
-      "rank": "3",
-      "cause": "string",
-      "probability": "Low",
-      "factors": "string",
-      "explanation": "string",
-      "keyInsightForRCA": "string"
-    }
+    { "rank": "1", "cause": "string", "probability": "High", "factors": "string", "explanation": "string", "keyInsightForRCA": "string" },
+    { "rank": "2", "cause": "string", "probability": "Medium", "factors": "string", "explanation": "string", "keyInsightForRCA": "string" },
+    { "rank": "3", "cause": "string", "probability": "Low", "factors": "string", "explanation": "string", "keyInsightForRCA": "string" }
   ],
-  "recommendations": {
-    "shortTerm": "string",
-    "longTerm": "string"
-  },
-  "references": [
-    { "title": "string", "description": "string" }
-  ]
+  "recommendations": { "shortTerm": "string", "longTerm": "string" },
+  "references": [{ "title": "string", "description": "string" }]
 }
 
 Guidelines:
-- Integrate DFMEA, PFMEA, SPC, and LPA data logically.
-- Provide evidence-backed reasoning (Who, What, When, Where, How).
-- Mention which document or image supports each finding.
+- Use DFMEA/PFMEA principles logically.
+- Mention which document or data supports each cause.
 - Quantify SPC or process variations when possible.
-- Keep manufacturing terminology accurate and concise.
+- Keep output concise, technical, and factual.
 `;
 
-    // --- 5️⃣ Build user message ---
-    const modeNote = deep
-      ? `You are in **Deep Analysis Mode** — interpret file content from uploaded documents.`
-      : `You are in **Quick Analysis Mode** — use only file names and descriptions.`;
+  const modeNote = deep
+    ? "🔍 Deep Analysis Mode: interpret document contents in detail."
+    : "⚡ Quick Analysis Mode: summarize based on names and brief context.";
 
-    const userPrompt = `
+  const userPrompt = `
 ${modeNote}
 
-Defect Description:
-${description || '(none provided)'}
+🧾 Defect Description:
+${description || "(none provided)"}
 
-Documents Uploaded:
-${docList}
+📚 Extracted Documents:
+${combinedText || "(no document data)"}
 
-Images Uploaded:
-${imgList}
+🖼️ Image References:
+${signedImages.map(i => `${i.name}: ${i.url}`).join("\n") || "(none)"}
 `;
 
-    // --- 6️⃣ Create Assistant (with file_search tool) ---
-    const assistant = await client.beta.assistants.create({
-      name: "RCA Root Cause Assistant",
-      instructions: systemPrompt,
-      model: "gpt-4o-mini",
-      tools: [{ type: "file_search" }], // ✅ REQUIRED for reading attachments
-    });
+  /* ------------------------------
+     4️⃣ Run GPT-4o Analysis
+  ------------------------------ */
+  const response = await client.chat.completions.create({
+    model: "gpt-4o-mini", // or "gpt-4-turbo" / "gpt-4o-mini"
+    temperature: 0.4,
+    messages: [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: userPrompt },
+    ],
+  });
 
-    // --- 7️⃣ Create Thread ---
-    const thread = await client.beta.threads.create();
+  const text = response.choices[0].message.content.trim();
 
-    // --- 8️⃣ Add message with file attachments ---
-    await client.beta.threads.messages.create(thread.id, {
-      role: "user",
-      content: [
-        { type: "text", text: userPrompt },
-        ...signedImages.map(img => ({
-          type: "image_url",
-          image_url: img.url,
-        })),
-      ],
-      attachments: uploadedDocs.map(f => ({
-        file_id: f.id,
-        tools: [{ type: "file_search" }], // ✅ REQUIRED — fixes your 400 error
-      })),
-    });
-
-    // --- 9️⃣ Run Assistant ---
-    const run = await client.beta.threads.runs.create(thread.id, {
-      assistant_id: assistant.id,
-    });
-
-    // Wait for completion
-    let completedRun;
-    while (true) {
-      completedRun = await client.beta.threads.runs.retrieve(thread.id, run.id);
-      if (completedRun.status === 'completed') break;
-      if (completedRun.status === 'failed') throw new Error('Assistant run failed');
-      await new Promise(r => setTimeout(r, 1000));
-    }
-
-    // --- 🔟 Fetch final message ---
-    const messages = await client.beta.threads.messages.list(thread.id);
-    const latest = messages.data[0]?.content?.[0]?.text?.value?.trim();
-
-    let parsed;
-    try {
-      parsed = JSON.parse(latest);
-      console.log('✅ RCA JSON parsed successfully.');
-    } catch (err) {
-      console.error('❌ Invalid JSON:', latest);
-      throw new Error('Invalid JSON response from assistant');
-    }
-
-    // --- 🧹 Cleanup ---
-    for (const doc of uploadedDocs) {
-      try {
-        await client.files.del(doc.id);
-        console.log(`🧹 Deleted file: ${doc.name}`);
-      } catch (err) {
-        console.warn(`⚠️ Failed to delete ${doc.name}: ${err.message}`);
-      }
-    }
-
+  /* ------------------------------
+     5️⃣ Parse result safely
+  ------------------------------ */
+  try {
+    const parsed = JSON.parse(text);
+    console.log("✅ RCA JSON parsed successfully.");
     return parsed;
   } catch (err) {
-    console.error('❌ RCA generation failed:', err);
-    throw err;
+    console.warn("⚠️ Invalid JSON returned, preserving raw text.");
+    return { rawOutput: text };
   }
 }
 
+/* -------------------------------------------------------------
+   Export for external use
+------------------------------------------------------------- */
 module.exports = { generateRootCause };

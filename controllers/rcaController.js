@@ -10,11 +10,13 @@ const generateRootCauseAnalysis = async (req, res) => {
       originalname: f.originalname,
       location: f.location, // S3 URL
       key: f.key,
+      mimetype: f.mimetype,
     }));
     const images = (req.files?.images || []).map(f => ({
       originalname: f.originalname,
       location: f.location,
       key: f.key,
+      mimetype: f.mimetype,
     }));
 
     const result = await generateRootCause({ description, documents, images });
