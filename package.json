@@ -11,6 +11,7 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@aws-sdk/s3-request-presigner": "^3.928.0",
     "@sendgrid/mail": "^8.1.6",
     "aws-sdk": "^2.1692.0",
     "cors": "^2.8.5",
