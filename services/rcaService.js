@@ -19,26 +19,26 @@ const s3 = new S3Client({
 async function getFileStreamFromS3(bucket, key) {
   const command = new GetObjectCommand({ Bucket: bucket, Key: key });
   const response = await s3.send(command);
-  return response.Body; // returns a readable stream
+  return response.Body; // returns readable stream
 }
 
 /**
- * ✅ Get a presigned S3 URL (for image readability)
+ * ✅ Generate presigned URL for image readability
  */
 async function getSignedS3Url(bucket, key) {
   const command = new GetObjectCommand({ Bucket: bucket, Key: key });
-  return await getSignedUrl(s3, command, { expiresIn: 300 }); // valid 5 minutes
+  return await getSignedUrl(s3, command, { expiresIn: 300 });
 }
 
 /**
- * 🧠 Core RCA Generation Logic
+ * 🧠 Core RCA Generation Logic using Assistants API
  */
 async function generateRootCause({ description, documents = [], images = [], deep = true }) {
-  try {
-    console.log('🟢 Starting RCA generation...');
-    const openAiDocs = [];
+  console.log('🟢 Starting RCA generation via Assistants API...');
 
-    // --- 1️⃣ Upload documents to OpenAI for deep reading ---
+  const uploadedDocs = [];
+  try {
+    // --- 1️⃣ Upload S3 documents to OpenAI ---
     for (const doc of documents) {
       const bucket = process.env.AWS_S3_BUCKET;
       const key = doc.key;
@@ -49,18 +49,15 @@ async function generateRootCause({ description, documents = [], images = [], dee
         continue;
       }
 
-      console.log(`📄 Uploading document from S3 → OpenAI: ${filename}`);
-      const stream = await getFileStreamFromS3(bucket, key);
-        stream.path = filename;
+      console.log(`📄 Uploading ${filename} from S3 to OpenAI...`);
+      const fileStream = await getFileStreamFromS3(bucket, key);
+
       const uploadedFile = await client.files.create({
-        file: stream,
+        file: fileStream,
         purpose: 'assistants',
       });
 
-      openAiDocs.push({
-        id: uploadedFile.id,
-        name: filename,
-      });
+      uploadedDocs.push({ id: uploadedFile.id, name: filename });
     }
 
     // --- 2️⃣ Generate signed URLs for images ---
@@ -69,16 +66,15 @@ async function generateRootCause({ description, documents = [], images = [], dee
         const bucket = process.env.AWS_S3_BUCKET;
         const key = img.key;
         const url = await getSignedS3Url(bucket, key);
-        console.log(`🖼️ Image presigned URL: ${img.originalname} → ${url}`);
         return { name: img.originalname, url };
       })
     );
 
-    // --- 3️⃣ Build readable lists for the model ---
-    const docList = openAiDocs.map(d => d.name).join('\n') || 'none';
+    // --- 3️⃣ Build context lists ---
+    const docList = uploadedDocs.map(d => d.name).join('\n') || 'none';
     const imgList = signedImages.map(i => i.name).join('\n') || 'none';
 
-    // --- 4️⃣ Define system prompt ---
+    // --- 4️⃣ Define system (assistant) prompt ---
     const systemPrompt = `
 You are an expert in manufacturing Root Cause Analysis (RCA) following DFMEA, PFMEA, and IATF 16949 standards.
 
@@ -149,49 +145,67 @@ Images Uploaded:
 ${imgList}
 `;
 
-    // --- 6️⃣ Prepare image inputs ---
-    const imageInputs = signedImages
-      .filter(i => i.url)
-      .map(i => ({
-        type: 'image_url',
-        image_url: i.url,
-      }));
-
-    // --- 7️⃣ Final messages for GPT ---
-    const messages = [
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: [{ type: 'text', text: userPrompt }, ...imageInputs, ...openAiDocs.map(doc => ({ type: 'file', file_id: doc.id }))] },
-    ];
-
-    console.log('🤖 Sending to GPT...');
-    const response = await client.chat.completions.create({
-      model: 'gpt-4o-mini',
-      messages,
-      temperature: 0.4,
+    // --- 6️⃣ Create Assistant ---
+    const assistant = await client.beta.assistants.create({
+      name: "RCA Root Cause Assistant",
+      instructions: systemPrompt,
+      model: "gpt-4o-mini",
     });
 
-    const text = response.choices?.[0]?.message?.content?.trim();
+    // --- 7️⃣ Create Thread ---
+    const thread = await client.beta.threads.create();
 
-    // --- 8️⃣ Try to parse JSON result ---
-    let result;
-    try {
-      const result = JSON.parse(text);
-      console.log('✅ RCA generated successfully.');
-    } catch (err) {
-      console.error('❌ Invalid JSON from GPT:', text);
-      throw new Error('Invalid JSON response from AI');
+    // --- 8️⃣ Add message with file attachments ---
+    await client.beta.threads.messages.create(thread.id, {
+      role: "user",
+      content: [
+        { type: "text", text: userPrompt },
+        ...signedImages.map(img => ({
+          type: "image_url",
+          image_url: img.url,
+        })),
+      ],
+      attachments: uploadedDocs.map(f => ({ file_id: f.id })),
+    });
+
+    // --- 9️⃣ Run Assistant ---
+    const run = await client.beta.threads.runs.create(thread.id, {
+      assistant_id: assistant.id,
+    });
+
+    // Wait for completion
+    let completedRun;
+    while (true) {
+      completedRun = await client.beta.threads.runs.retrieve(thread.id, run.id);
+      if (completedRun.status === 'completed') break;
+      if (completedRun.status === 'failed') throw new Error('Assistant run failed');
+      await new Promise(r => setTimeout(r, 1000));
     }
-    // --- 🔟 Cleanup: Delete OpenAI files ---
-    for (const doc of openAiDocs) {
+
+    // --- 🔟 Fetch final message ---
+    const messages = await client.beta.threads.messages.list(thread.id);
+    const latest = messages.data[0]?.content?.[0]?.text?.value?.trim();
+
+    let parsed;
+    try {
+      parsed = JSON.parse(latest);
+      console.log('✅ RCA JSON parsed successfully.');
+    } catch (err) {
+      console.error('❌ Invalid JSON:', latest);
+      throw new Error('Invalid JSON response from assistant');
+    }
+
+    // --- 🧹 Delete uploaded files ---
+    for (const doc of uploadedDocs) {
       try {
         await client.files.del(doc.id);
-        console.log(`🧹 Deleted temporary OpenAI file: ${doc.name}`);
-      } catch (delErr) {
-        console.warn(`⚠️ Failed to delete file ${doc.name}: ${delErr.message}`);
+        console.log(`🧹 Deleted file: ${doc.name}`);
+      } catch (err) {
+        console.warn(`⚠️ Failed to delete ${doc.name}: ${err.message}`);
       }
     }
 
-    return result;
+    return parsed;
   } catch (err) {
     console.error('❌ RCA generation failed:', err);
     throw err;
