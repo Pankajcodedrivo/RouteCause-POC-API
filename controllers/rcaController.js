@@ -54,6 +54,7 @@ const sendEmailReport = async (req, res) => {
             <td>${rc.probability || '-'}</td>
             <td>${rc.factors || '-'}</td>
             <td>${rc.explanation || '-'}</td>
+            <td>${rc.keyInsightForRCA || '-'}</td>
           </tr>
         `
       )
