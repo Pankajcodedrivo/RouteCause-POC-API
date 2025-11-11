@@ -1,79 +1,153 @@
 const OpenAI = require('openai');
+const { S3Client, GetObjectCommand } = require('@aws-sdk/client-s3');
+const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
+
 const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-async function generateRootCause({ description, documents, images }) {
-  const docList = documents.map(d => d.originalname).join(', ');
-  const imgList = images.map(i => i.originalname).join(', ');
+const s3 = new S3Client({
+  region: process.env.AWS_REGION,
+  credentials: {
+    accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+  },
+});
+
+// ✅ Generate temporary signed URL for private S3 files (5 min validity)
+async function getPresignedUrl(s3Url) {
+  try {
+    const [bucketPart, keyPart] = s3Url.split('.s3.amazonaws.com/');
+    const bucket = bucketPart.replace('https://', '').split('.')[0];
+    const key = keyPart;
+    const command = new GetObjectCommand({ Bucket: bucket, Key: key });
+    return await getSignedUrl(s3, command, { expiresIn: 300 });
+  } catch (err) {
+    console.error('Presign failed:', err);
+    return null;
+  }
+}
+
+// ✅ Core RCA generation logic
+async function generateRootCause({ description, documents, images, deep = true }) {
+  // Generate signed URLs for docs/images
+  const signedDocuments = await Promise.all(
+    documents.map(async (d) => ({
+      name: d.originalname,
+      url: await getPresignedUrl(d.location),
+    }))
+  );
+
+  const signedImages = await Promise.all(
+    images.map(async (i) => ({
+      name: i.originalname,
+      url: await getPresignedUrl(i.location),
+    }))
+  );
+
+  // Build readable doc + image lists
+  const docList = signedDocuments
+    .map((d) => `${d.name} (${d.url ? d.url : 'unavailable'})`)
+    .join('\n');
+  const imgList = signedImages
+    .map((i) => `${i.name} (${i.url ? i.url : 'unavailable'})`)
+    .join('\n');
+
+  // ------------------- AI PROMPT -------------------
   const systemPrompt = `
-    You are an expert in manufacturing Root Cause Analysis (RCA) following DFMEA, PFMEA, and IATF 16949 standards.
+You are an expert in manufacturing Root Cause Analysis (RCA) following DFMEA, PFMEA, and IATF 16949 standards.
 
-    Your task:
-    Analyze the provided defect description, inspection data, SPC data, LPA audits, process logs, images, and all attached reference documents.
-    Synthesize information across all sources to determine the most probable root cause(s) using logical and probabilistic reasoning.
+Your task:
+Analyze the defect description, inspection data, SPC data, LPA audits, and uploaded reference files (documents + images).
+Use these inputs to determine the **top 3 most probable root causes**, ranked by probability.
 
-    Consider:
-    - DFMEA and PFMEA failure modes and current controls
-    - SPC trends, process parameter variations, and timestamps
-    - LPA findings and audit results
-    - Operator, shift, and environmental influences
-    - Historical maintenance or calibration records
-
-    Output **only valid JSON** in the following format:
-
+Return only **valid JSON** in this structure:
+{
+  "rootCauses": [
     {
-      "rootCauses": [
-        {
-          "cause": "string",
-          "probability": "string",
-          "factors": "string",
-          "explanation": "string",
-          "keyInsightForRCA": "string"
-        }
-      ],
-      "recommendations": {
-        "shortTerm": "string",
-        "longTerm": "string"
-      },
-      "references": [
-        { "title": "string", "description": "string" }
-      ]
+      "rank": "1",
+      "cause": "string",
+      "probability": "High",
+      "factors": "string",
+      "explanation": "string",
+      "keyInsightForRCA": "string"
+    },
+    {
+      "rank": "2",
+      "cause": "string",
+      "probability": "Medium",
+      "factors": "string",
+      "explanation": "string",
+      "keyInsightForRCA": "string"
+    },
+    {
+      "rank": "3",
+      "cause": "string",
+      "probability": "Low",
+      "factors": "string",
+      "explanation": "string",
+      "keyInsightForRCA": "string"
     }
+  ],
+  "recommendations": {
+    "shortTerm": "string",
+    "longTerm": "string"
+  },
+  "references": [
+    { "title": "string", "description": "string" }
+  ]
+}
 
-    Guidelines:
-    - Use precise manufacturing and quality terminology (SPC, LPA, DFMEA, PFMEA, etc.).
-    - Include **specific details** whenever possible:
-      - Operator name or ID and shift (Who)
-      - The exact failure or variation observed (What)
-      - Time/date ranges and duration (When)
-      - Process station, machine, or environment (Where)
-      - Mechanism or reason explaining the linkage (How)
-    - Quantify findings where available (e.g., “40% non-conformance rate,” “12 of 30 samples out of spec,” “deviation began 2024-09-14”).
-    - Correlate SPC anomalies, LPA results, and process parameter data to identify causal chains.
-    - The **"keyInsightForRCA"** field must summarize the integrated Who–What–When–Where–How explanation with supporting numeric data if available.
-    - Distinguish between systemic and special cause variation.
-    - Use evidence-backed probabilistic reasoning.
-    - Return JSON only (no markdown, no comments, no extra text).
-    `;
+Guidelines:
+- Integrate DFMEA, PFMEA, SPC, and LPA data logically.
+- Provide evidence-backed reasoning (Who, What, When, Where, How).
+- Mention which document or image supports each finding.
+- Quantify SPC or process variations when possible.
+- Keep manufacturing terminology accurate and concise.
+`;
+
+  // 🧠 If deep mode enabled, let model know to prioritize document interpretation
+  const modeNote = deep
+    ? `You are in **Deep Analysis Mode** — interpret file content from uploaded documents.`
+    : `You are in **Quick Analysis Mode** — use only file names and descriptions.`;
 
   const userPrompt = `
-  Defect Description: ${description || '(none provided)'}
-  Documents Uploaded: ${docList || 'none'}
-  Images Uploaded: ${imgList || 'none'}
-  `;
+${modeNote}
 
+Defect Description:
+${description || '(none provided)'}
+
+Documents Uploaded:
+${docList || 'none'}
+
+Images Uploaded:
+${imgList || 'none'}
+`;
+console.log(userPrompt);
+  // Pass images to model for multimodal input
+  const imageInputs = signedImages
+    .filter((i) => i.url)
+    .map((i) => ({
+      type: 'image_url',
+      image_url: i.url,
+    }));
+
+  const messages = [
+    { role: 'system', content: systemPrompt },
+    { role: 'user', content: [{ type: 'text', text: userPrompt }, ...imageInputs] },
+  ];
+
+  // ------------------- AI CALL -------------------
   const response = await client.chat.completions.create({
     model: 'gpt-4o-mini',
-    messages: [
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: userPrompt },
-    ],
+    messages,
     temperature: 0.4,
   });
 
   const text = response.choices?.[0]?.message?.content?.trim();
+
   try {
     return JSON.parse(text);
-  } catch (e) {
+  } catch (err) {
+    console.error('❌ Invalid JSON:', text);
     throw new Error('Invalid JSON response from AI');
   }
 }
