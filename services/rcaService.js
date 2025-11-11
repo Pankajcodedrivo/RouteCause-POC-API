@@ -51,11 +51,10 @@ async function generateRootCause({ description, documents = [], images = [], dee
 
       console.log(`📄 Uploading document from S3 → OpenAI: ${filename}`);
       const stream = await getFileStreamFromS3(bucket, key);
-
+        stream.path = filename;
       const uploadedFile = await client.files.create({
         file: stream,
         purpose: 'assistants',
-        filename,
       });
 
       openAiDocs.push({
