@@ -17,7 +17,7 @@ async function getPresignedUrl(file) {
   try {
     let bucket = process.env.AWS_BUCKET;
     let key;
-
+    
     if (file.key) {
       key = file.key;
     } else if (file.location) {
@@ -28,7 +28,8 @@ async function getPresignedUrl(file) {
         key = match[2];
       }
     }
-
+    console.log(bucket);
+     console.log(key);
     if (!key) throw new Error('Missing S3 key or location');
 
     const command = new GetObjectCommand({ Bucket: bucket, Key: key });
@@ -42,6 +43,7 @@ async function getPresignedUrl(file) {
 // ✅ Core RCA generation logic
 async function generateRootCause({ description, documents, images, deep = true }) {
   // Generate signed URLs for docs/images
+  console.log(documents);
   const signedDocuments = await Promise.all(
     documents.map(async (d) => ({
       name: d.originalname,
