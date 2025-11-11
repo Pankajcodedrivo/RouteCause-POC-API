@@ -4,6 +4,7 @@ const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 
 const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
+// --- AWS S3 Setup ---
 const s3 = new S3Client({
   region: process.env.AWS_REGION,
   credentials: {
@@ -12,62 +13,74 @@ const s3 = new S3Client({
   },
 });
 
-// ✅ Efficient presigner: works with both "key" and "location"
-async function getPresignedUrl(file) {
-  try {
-    let bucket = process.env.AWS_S3_BUCKET;
-    let key;
-    
-    if (file.key) {
-      key = file.key;
-    } else if (file.location) {
-      // Parse location only if key not provided
-      const match = file.location.match(/^https:\/\/([^.]*)\.s3[.-][^.]+\.amazonaws\.com\/(.+)$/);
-      if (match) {
-        bucket = match[1];
-        key = match[2];
-      }
-    }
-    console.log(bucket);
-     console.log(key);
-    if (!key) throw new Error('Missing S3 key or location');
-
-    const command = new GetObjectCommand({ Bucket: bucket, Key: key });
-    return await getSignedUrl(s3, command, { expiresIn: 300 });
-  } catch (err) {
-    console.error('Presign failed:', err.message);
-    return null;
-  }
+/**
+ * ✅ Get a readable stream from S3
+ */
+async function getFileStreamFromS3(bucket, key) {
+  const command = new GetObjectCommand({ Bucket: bucket, Key: key });
+  const response = await s3.send(command);
+  return response.Body; // returns a readable stream
 }
 
-// ✅ Core RCA generation logic
-async function generateRootCause({ description, documents, images, deep = true }) {
-  // Generate signed URLs for docs/images
-  console.log(documents);
-  const signedDocuments = await Promise.all(
-    documents.map(async (d) => ({
-      name: d.originalname,
-      url: await getPresignedUrl(d),
-    }))
-  );
+/**
+ * ✅ Get a presigned S3 URL (for image readability)
+ */
+async function getSignedS3Url(bucket, key) {
+  const command = new GetObjectCommand({ Bucket: bucket, Key: key });
+  return await getSignedUrl(s3, command, { expiresIn: 300 }); // valid 5 minutes
+}
 
-  const signedImages = await Promise.all(
-    images.map(async (i) => ({
-      name: i.originalname,
-      url: await getPresignedUrl(i),
-    }))
-  );
+/**
+ * 🧠 Core RCA Generation Logic
+ */
+async function generateRootCause({ description, documents = [], images = [], deep = true }) {
+  try {
+    console.log('🟢 Starting RCA generation...');
+    const openAiDocs = [];
 
-  // Build readable doc + image lists
-  const docList = signedDocuments
-    .map((d) => `${d.name} (${d.url ? d.url : 'unavailable'})`)
-    .join('\n');
-  const imgList = signedImages
-    .map((i) => `${i.name} (${i.url ? i.url : 'unavailable'})`)
-    .join('\n');
+    // --- 1️⃣ Upload documents to OpenAI for deep reading ---
+    for (const doc of documents) {
+      const bucket = process.env.AWS_S3_BUCKET;
+      const key = doc.key;
+      const filename = doc.originalname || 'document';
 
-  // ------------------- AI PROMPT -------------------
-  const systemPrompt = `
+      if (!bucket || !key) {
+        console.warn(`⚠️ Skipping invalid document: ${filename}`);
+        continue;
+      }
+
+      console.log(`📄 Uploading document from S3 → OpenAI: ${filename}`);
+      const stream = await getFileStreamFromS3(bucket, key);
+
+      const uploadedFile = await client.files.create({
+        file: stream,
+        purpose: 'assistants',
+        filename,
+      });
+
+      openAiDocs.push({
+        id: uploadedFile.id,
+        name: filename,
+      });
+    }
+
+    // --- 2️⃣ Generate signed URLs for images ---
+    const signedImages = await Promise.all(
+      images.map(async (img) => {
+        const bucket = process.env.AWS_S3_BUCKET;
+        const key = img.key;
+        const url = await getSignedS3Url(bucket, key);
+        console.log(`🖼️ Image presigned URL: ${img.originalname} → ${url}`);
+        return { name: img.originalname, url };
+      })
+    );
+
+    // --- 3️⃣ Build readable lists for the model ---
+    const docList = openAiDocs.map(d => d.name).join('\n') || 'none';
+    const imgList = signedImages.map(i => i.name).join('\n') || 'none';
+
+    // --- 4️⃣ Define system prompt ---
+    const systemPrompt = `
 You are an expert in manufacturing Root Cause Analysis (RCA) following DFMEA, PFMEA, and IATF 16949 standards.
 
 Your task:
@@ -119,51 +132,70 @@ Guidelines:
 - Keep manufacturing terminology accurate and concise.
 `;
 
-  // 🧠 If deep mode enabled, let model know to prioritize document interpretation
-  const modeNote = deep
-    ? `You are in **Deep Analysis Mode** — interpret file content from uploaded documents.`
-    : `You are in **Quick Analysis Mode** — use only file names and descriptions.`;
+    // --- 5️⃣ Build user message ---
+    const modeNote = deep
+      ? `You are in **Deep Analysis Mode** — interpret file content from uploaded documents.`
+      : `You are in **Quick Analysis Mode** — use only file names and descriptions.`;
 
-  const userPrompt = `
+    const userPrompt = `
 ${modeNote}
 
 Defect Description:
 ${description || '(none provided)'}
 
 Documents Uploaded:
-${docList || 'none'}
+${docList}
 
 Images Uploaded:
-${imgList || 'none'}
+${imgList}
 `;
-console.log(userPrompt);
-  // Pass images to model for multimodal input
-  const imageInputs = signedImages
-    .filter((i) => i.url)
-    .map((i) => ({
-      type: 'image_url',
-      image_url: i.url,
-    }));
 
-  const messages = [
-    { role: 'system', content: systemPrompt },
-    { role: 'user', content: [{ type: 'text', text: userPrompt }, ...imageInputs] },
-  ];
+    // --- 6️⃣ Prepare image inputs ---
+    const imageInputs = signedImages
+      .filter(i => i.url)
+      .map(i => ({
+        type: 'image_url',
+        image_url: i.url,
+      }));
 
-  // ------------------- AI CALL -------------------
-  const response = await client.chat.completions.create({
-    model: 'gpt-4o-mini',
-    messages,
-    temperature: 0.4,
-  });
+    // --- 7️⃣ Final messages for GPT ---
+    const messages = [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: [{ type: 'text', text: userPrompt }, ...imageInputs, ...openAiDocs.map(doc => ({ type: 'file', file_id: doc.id }))] },
+    ];
 
-  const text = response.choices?.[0]?.message?.content?.trim();
+    console.log('🤖 Sending to GPT...');
+    const response = await client.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages,
+      temperature: 0.4,
+    });
 
-  try {
-    return JSON.parse(text);
+    const text = response.choices?.[0]?.message?.content?.trim();
+
+    // --- 8️⃣ Try to parse JSON result ---
+    let result;
+    try {
+      const result = JSON.parse(text);
+      console.log('✅ RCA generated successfully.');
+    } catch (err) {
+      console.error('❌ Invalid JSON from GPT:', text);
+      throw new Error('Invalid JSON response from AI');
+    }
+    // --- 🔟 Cleanup: Delete OpenAI files ---
+    for (const doc of openAiDocs) {
+      try {
+        await client.files.del(doc.id);
+        console.log(`🧹 Deleted temporary OpenAI file: ${doc.name}`);
+      } catch (delErr) {
+        console.warn(`⚠️ Failed to delete file ${doc.name}: ${delErr.message}`);
+      }
+    }
+
+    return result;
   } catch (err) {
-    console.error('❌ Invalid JSON:', text);
-    throw new Error('Invalid JSON response from AI');
+    console.error('❌ RCA generation failed:', err);
+    throw err;
   }
 }
 
