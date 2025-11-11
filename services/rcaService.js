@@ -160,7 +160,7 @@ ${combinedText || "(no document data)"}
 🖼️ Image References:
 ${signedImages.map(i => `${i.name}: ${i.url}`).join("\n") || "(none)"}
 `;
-
+  console.log(userPrompt);
   /* ------------------------------
      4️⃣ Run GPT-4o Analysis
   ------------------------------ */
