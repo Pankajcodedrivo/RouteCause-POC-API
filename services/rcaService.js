@@ -173,8 +173,8 @@ ${signedImages.map(i => `${i.name}: ${i.url}`).join("\n") || "(none)"}
     ],
   });
 
-  const text = response.choices[0].message.content.trim();
-
+  let text = response.choices[0].message.content.trim();
+  text = text.replace(/^```json\s*/i, "").replace(/```$/, "").trim();
   /* ------------------------------
      5️⃣ Parse result safely
   ------------------------------ */
