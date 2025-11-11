@@ -12,16 +12,29 @@ const s3 = new S3Client({
   },
 });
 
-// ✅ Generate temporary signed URL for private S3 files (5 min validity)
-async function getPresignedUrl(s3Url) {
+// ✅ Efficient presigner: works with both "key" and "location"
+async function getPresignedUrl(file) {
   try {
-    const [bucketPart, keyPart] = s3Url.split('.s3.amazonaws.com/');
-    const bucket = bucketPart.replace('https://', '').split('.')[0];
-    const key = keyPart;
+    let bucket = process.env.AWS_BUCKET;
+    let key;
+
+    if (file.key) {
+      key = file.key;
+    } else if (file.location) {
+      // Parse location only if key not provided
+      const match = file.location.match(/^https:\/\/([^.]*)\.s3[.-][^.]+\.amazonaws\.com\/(.+)$/);
+      if (match) {
+        bucket = match[1];
+        key = match[2];
+      }
+    }
+
+    if (!key) throw new Error('Missing S3 key or location');
+
     const command = new GetObjectCommand({ Bucket: bucket, Key: key });
     return await getSignedUrl(s3, command, { expiresIn: 300 });
   } catch (err) {
-    console.error('Presign failed:', err);
+    console.error('Presign failed:', err.message);
     return null;
   }
 }
@@ -32,14 +45,14 @@ async function generateRootCause({ description, documents, images, deep = true }
   const signedDocuments = await Promise.all(
     documents.map(async (d) => ({
       name: d.originalname,
-      url: await getPresignedUrl(d.location),
+      url: await getPresignedUrl(d),
     }))
   );
 
   const signedImages = await Promise.all(
     images.map(async (i) => ({
       name: i.originalname,
-      url: await getPresignedUrl(i.location),
+      url: await getPresignedUrl(i),
     }))
   );
 
