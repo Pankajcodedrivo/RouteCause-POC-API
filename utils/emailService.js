@@ -2,43 +2,37 @@
 const sgMail = require("@sendgrid/mail");
 sgMail.setApiKey(process.env.SENDGRID_API_KEY);
 
-async function sendEmail({ to, subject, html }) {
+async function sendEmail({ to, subject, rootCauses,references,longTerm,shortTerm }) {
   try {
     // ✅ Normalize recipients (array or comma-separated string)
     const recipients = Array.isArray(to)
       ? to
       : to.split(",").map(email => email.trim()).filter(Boolean);
 
-    // ✅ Generate a plain text version for spam filters
-    const text = html
-      .replace(/<\/?[^>]+(>|$)/g, "") // remove HTML tags
-      .replace(/\s{2,}/g, " ")        // collapse extra spaces
-      .trim();
-
-    // ✅ Construct safe and authenticated email
+    // ✅ Build message using your dynamic template ID
     const msg = {
       to: recipients,
       from: {
         email: process.env.SENDGRID_FROM_EMAIL,
-        name: "Root Cause Analysis System", // ✅ Friendly, consistent sender name
+        name: "Root Cause Analysis System", // Friendly sender
       },
-      subject: subject.trim(),
-      text, // ✅ Plain text fallback
-      html,
+      subject, // optional — SendGrid uses template subject if defined
+      templateId: "d-e5e91a67dad2440f97b56fda8191d4f7", // ✅ your template ID
+      dynamicTemplateData: {
+        rootCauses,
+        references,
+        longTerm,
+        shortTerm
+      },
       trackingSettings: {
-        clickTracking: { enable: false }, // ✅ Avoids "tracking link" spam signals
+        clickTracking: { enable: false },
         openTracking: { enable: true },
       },
-      mailSettings: {
-        bypassSpamManagement: { enable: false },
-        sandboxMode: { enable: process.env.NODE_ENV === "development" },
-      },
       headers: {
-        "X-Mailer": "RCA-System-Mailer", // ✅ Identifiable mailer header
+        "X-Mailer": "RCA-System-Mailer",
       },
     };
 
-    // ✅ Send the email using SendGrid’s multi-recipient method
     const result = await sgMail.sendMultiple(msg);
     console.log("✅ Email sent successfully to:", recipients);
     return result;

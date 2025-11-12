@@ -39,12 +39,6 @@ const sendEmailReport = async (req, res) => {
     const parsedData = typeof data === "string" ? JSON.parse(data) : data;
     const { rootCauses, recommendations, references } = parsedData;
 
-    const logoUrl = `${process.env.BASE_URL}uploads/logo.svg`;
-
-    // Load HTML template
-    const templatePath = path.join(process.cwd(), 'templates', 'emailReport.html');
-    let html = fs.readFileSync(templatePath, 'utf8');
-
     // Generate dynamic HTML
     const rootCausesHTML = rootCauses
       .map(
@@ -64,19 +58,15 @@ const sendEmailReport = async (req, res) => {
       .map(ref => `<li><strong>${ref.title}</strong> ${ref.description}</li>`)
       .join('');
 
-    // Replace placeholders in template
-    html = html
-      .replace('{{logoUrl}}', logoUrl)
-      .replace('{{rootCauses}}', rootCausesHTML)
-      .replace('{{shortTerm}}', recommendations.shortTerm || '-')
-      .replace('{{longTerm}}', recommendations.longTerm || '-')
-      .replace('{{references}}', referencesHTML);
 
     // Send email
     await sendEmail({
       to: email,
       subject: 'Root Cause Analysis Report',
-      html,
+      rootCauses: rootCausesHTML,
+      references:referencesHTML,
+      longTerm: recommendations.longTerm,
+      shortTerm: recommendations.shortTerm
     });
 
     res.json({ success: true, message: 'Email sent successfully' });
