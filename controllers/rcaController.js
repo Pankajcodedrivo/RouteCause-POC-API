@@ -39,7 +39,7 @@ const sendEmailReport = async (req, res) => {
     const parsedData = typeof data === "string" ? JSON.parse(data) : data;
     const { rootCauses, recommendations, references } = parsedData;
 
-    const logoUrl = `${process.env.BASE_URL}/uploads/logo.svg`;
+    const logoUrl = `${process.env.BASE_URL}uploads/logo.svg`;
 
     // Load HTML template
     const templatePath = path.join(process.cwd(), 'templates', 'emailReport.html');
