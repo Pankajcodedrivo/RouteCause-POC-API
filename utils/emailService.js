@@ -16,7 +16,7 @@ async function sendEmail({ to, subject, text, html }) {
       text,
       html,
     };
-
+    console.log(msg);
     const result = await sgMail.sendMultiple(msg); // ✅ use sendMultiple instead of send
     console.log("✅ Email sent successfully",recipients);
     return result;
