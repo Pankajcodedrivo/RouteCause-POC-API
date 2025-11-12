@@ -126,6 +126,13 @@ Analyze the provided defect description and extracted file data
 (PDF, Word, Excel, or text), along with optional images.
 Identify the **top 3 most probable root causes**, ranked by likelihood.
 
+Consider:
+    - DFMEA and PFMEA failure modes and current controls
+    - SPC trends, process parameter variations, and timestamps
+    - LPA findings and audit results
+    - Operator, shift, and environmental influences
+    - Historical maintenance or calibration records
+
 Return strictly **valid JSON** in this structure:
 {
   "rootCauses": [
@@ -137,13 +144,20 @@ Return strictly **valid JSON** in this structure:
   "references": [{ "title": "string", "description": "string" }]
 }
 
-Guidelines:
-- Use DFMEA/PFMEA principles logically.
-- Mention which document or data supports each cause.
-- Quantify SPC or process variations when possible.
-- Keep output concise, technical, and factual.
-`;
-
+  Guidelines:
+    - Use precise manufacturing and quality terminology (SPC, LPA, DFMEA, PFMEA, etc.).
+    - Include **specific details** whenever possible:
+      - Operator name or ID and shift (Who)
+      - The exact failure or variation observed (What)
+      - Time/date ranges and duration (When)
+      - Process station, machine, or environment (Where)
+      - Mechanism or reason explaining the linkage (How)
+    - Quantify findings where available (e.g., “40% non-conformance rate,” “12 of 30 samples out of spec,” “deviation began 2024-09-14”).
+    - Correlate SPC anomalies, LPA results, and process parameter data to identify causal chains.
+    - The **"keyInsightForRCA"** field must summarize the integrated Who–What–When–Where–How explanation with supporting numeric data if available.
+    - Distinguish between systemic and special cause variation.
+    - Use evidence-backed probabilistic reasoning.
+    - Return JSON only (no markdown, no comments, no extra text).`;
   const modeNote = deep
     ? "🔍 Deep Analysis Mode: interpret document contents in detail."
     : "⚡ Quick Analysis Mode: summarize based on names and brief context.";
@@ -160,7 +174,6 @@ ${combinedText || "(no document data)"}
 🖼️ Image References:
 ${signedImages.map(i => `${i.name}: ${i.url}`).join("\n") || "(none)"}
 `;
-  console.log(userPrompt);
   /* ------------------------------
      4️⃣ Run GPT-4o Analysis
   ------------------------------ */
