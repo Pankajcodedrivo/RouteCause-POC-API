@@ -157,7 +157,10 @@ Return strictly **valid JSON** in this structure:
     - The **"keyInsightForRCA"** field must summarize the integrated Who–What–When–Where–How explanation with supporting numeric data if available.
     - Distinguish between systemic and special cause variation.
     - Use evidence-backed probabilistic reasoning.
-    - Return JSON only (no markdown, no comments, no extra text).`;
+  +   - ⚠️ Do NOT fabricate or assume numeric data, dates, or specifications.
+  +   - Only reference values explicitly found in the provided documents or description.
+  +   - If information is missing, clearly state “Not specified.”
+      - Return JSON only (no markdown, no comments, no extra text).`;
   const modeNote = deep
     ? "🔍 Deep Analysis Mode: interpret document contents in detail."
     : "⚡ Quick Analysis Mode: summarize based on names and brief context.";
