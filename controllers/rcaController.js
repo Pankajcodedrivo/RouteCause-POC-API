@@ -88,7 +88,7 @@ const sendFeedback = async (req, res) => {
     }
     // Send email
     await sendEmail({
-      to: email,
+      to: "bittus@scaleupsoftware.io",
       subject: 'User Feedback',
       templateId : 'd-ea7dbfbe2ad7470a965570b6de059c12',
       dynamicTemplateData:{
