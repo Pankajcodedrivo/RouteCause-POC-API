@@ -63,10 +63,14 @@ const sendEmailReport = async (req, res) => {
     await sendEmail({
       to: email,
       subject: 'Root Cause Analysis Report',
-      rootCauses: rootCausesHTML,
-      references:referencesHTML,
-      longTerm: recommendations.longTerm,
-      shortTerm: recommendations.shortTerm
+      templateId : 'd-e5e91a67dad2440f97b56fda8191d4f7',
+      dynamicTemplateData:{
+        rootCauses: rootCausesHTML,
+        references:referencesHTML,
+        longTerm: recommendations.longTerm,
+        shortTerm: recommendations.shortTerm
+      }
+      
     });
 
     res.json({ success: true, message: 'Email sent successfully' });
@@ -76,4 +80,27 @@ const sendEmailReport = async (req, res) => {
   }
 };
 
-module.exports = { generateRootCauseAnalysis, sendEmailReport };
+const sendFeedback = async (req, res) => {
+  try {
+    const { feedback } = req.body;
+    if (!feedback) {
+      return res.status(400).json({ success: false, message: 'Feedback message is required' });
+    }
+    // Send email
+    await sendEmail({
+      to: email,
+      subject: 'User Feedback',
+      templateId : 'd-ea7dbfbe2ad7470a965570b6de059c12',
+      dynamicTemplateData:{
+        feebackMessage: feedback,
+      }
+    });
+
+    res.json({ success: true, message: 'Feedback sent successfully' });
+  } catch (err) {
+    console.error('❌ Email send failed:', err);
+    res.status(500).json({ success: false, message: 'Failed to send email' });
+  }
+};
+
+module.exports = { generateRootCauseAnalysis, sendEmailReport, sendFeedback };

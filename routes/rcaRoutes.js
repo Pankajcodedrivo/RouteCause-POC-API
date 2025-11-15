@@ -37,5 +37,6 @@ router.post(
 );
 
 router.post('/sendEmail', rcaController.sendEmailReport);
+router.post('/sendFeedback', rcaController.sendFeedback);
 
 module.exports = router;
