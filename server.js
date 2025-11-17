@@ -9,6 +9,7 @@ app.use(
   cors({
     origin: [
         'https://aiqe.codedrivo.com',
+        'https://aiqe.ai',
       'http://localhost:5173',
       '*',
       'http://localhost:5174',
