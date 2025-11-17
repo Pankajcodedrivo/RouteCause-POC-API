@@ -88,7 +88,7 @@ const sendFeedback = async (req, res) => {
     }
     // Send email
     await sendEmail({
-      to: "bittus@scaleupsoftware.io",
+      to:  process.env.SENDGRID_TO_EMAIL,
       subject: 'User Feedback',
       templateId : 'd-ea7dbfbe2ad7470a965570b6de059c12',
       dynamicTemplateData:{
